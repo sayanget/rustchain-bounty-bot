@@ -1,0 +1,9 @@
+name: 'RustChain Bounty Verification'
+description: 'Automatically verify bounty claims on GitHub issues'
+inputs:
+  github-token:
+    description: 'GitHub token'
+    required: true
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
