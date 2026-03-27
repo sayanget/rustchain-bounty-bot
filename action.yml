@@ -1,9 +1,13 @@
-name: 'RustChain Bounty Verification'
-description: 'Automatically verify bounty claims on GitHub issues'
+name: "RustChain Bounty Bot"
+description: "Verify Star/Follow/Wallet for RustChain bounties"
 inputs:
   github-token:
-    description: 'GitHub token'
+    description: "GitHub Token for API"
     required: true
+  node-url:
+    description: "RustChain Node API URL"
+    required: false
+    default: "https://50.28.86.131"
 runs:
-  using: 'node20'
-  main: 'dist/index.js'
+  using: "node20"
+  main: "dist/index.js"

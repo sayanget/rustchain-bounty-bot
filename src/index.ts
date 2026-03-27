@@ -8,48 +8,77 @@ async function run() {
     const octokit = github.getOctokit(token);
     const context = github.context;
 
-    if (context.eventName !== 'issue_comment') {
-      core.info('Not an issue comment event. Skipping.');
-      return;
-    }
+    if (context.eventName !== 'issue_comment') return;
 
     const commentBody = context.payload.comment?.body || '';
     const sender = context.payload.comment?.user?.login;
 
-    // 1. Basic Claim Detection
-    if (!commentBody.toLowerCase().includes('claim') && !commentBody.toLowerCase().includes('wallet:')) {
-      core.info('No claim detected in comment.');
-      return;
-    }
+    if (!commentBody.toLowerCase().includes('claim') && !commentBody.toLowerCase().includes('wallet:')) return;
 
     core.info(`Processing claim from @${sender}...`);
 
-    // 2. Extract Data
     const walletMatch = commentBody.match(/wallet:\s*(`)?(\w+)(`)?/i);
     const wallet = walletMatch ? walletMatch[2] : null;
-    
-    const results = {
-      follows: 'pending',
-      stars: 0,
-      walletExists: 'pending',
-      duplicate: 'pending'
-    };
 
-    // 3. Verification Logic (Mocks for initial framework)
-    // TODO: Implement actual GitHub and RustChain Node API calls
-    
-    // 4. Post Verification Result
+    let follows = 'no';
+    try {
+      // Corrected check: check if target_user follows username (Scottcjn)
+      await octokit.rest.users.checkPersonIsFollowedByAuthenticated({
+        username: 'Scottcjn',
+        target_user: sender
+      });
+      follows = 'yes';
+    } catch (e) {
+      follows = 'no';
+    }
+
+    const owner = 'Scottcjn';
+    const scottRepos = await octokit.paginate(octokit.rest.repos.listForUser, {
+      username: owner,
+      type: 'owner',
+      per_page: 100
+    });
+    const scottRepoFullNames = new Set(scottRepos.map(r => r.full_name));
+
+    let starCount = 0;
+    const starredRepos = await octokit.paginate(octokit.rest.activity.listReposStarredByUser, {
+      username: sender,
+      per_page: 100
+    });
+
+    for (const item of starredRepos) {
+      // Octokit type for starred repos can vary depending on headers, but usually contains .repo or is the repo itself
+      const repoFullName = (item as any).full_name || (item as any).repo?.full_name;
+      if (repoFullName && scottRepoFullNames.has(repoFullName)) {
+        starCount++;
+      }
+    }
+
+    let walletBalance = 'N/A';
+    let walletExists = 'no';
+    if (wallet) {
+      try {
+        const nodeUrl = core.getInput('node-url') || 'https://50.28.86.131';
+        const response = await axios.get(`${nodeUrl}/wallet/balance?miner_id=${wallet}`, { timeout: 10000 });
+        if (response.data && response.data.balance !== undefined) {
+          walletExists = 'yes';
+          walletBalance = `${response.data.balance} RTC`;
+        }
+      } catch (e: any) {
+        core.warning(`Node API check failed: ${e.message}`);
+      }
+    }
+
     const responseBody = `
 ## Automated Verification for @${sender}
 
 | Check | Result |
 |-------|--------|
-| Follows @Scottcjn | ${results.follows === 'yes' ? '✅ Yes' : '⚠️ Pending'} |
-| Scottcjn repos starred | ${results.stars} |
-| Wallet \`${wallet || 'N/A'}\` exists | ${results.walletExists === 'yes' ? '✅ Yes' : '⚠️ Not Found/Pending'} |
-| Previous claims | ${results.duplicate === 'no' ? '✅ Clear' : '⚠️ Warning'} |
+| Follows @Scottcjn | ${follows === 'yes' ? '✅ Yes' : '❌ No'} |
+| Scottcjn repos starred | **${starCount}** / ${scottRepos.length} |
+| Wallet \`${wallet || 'N/A'}\` exists | ${walletExists === 'yes' ? `✅ Yes (Balance: ${walletBalance})` : '❌ Not Found'} |
 
-**Suggested action**: Human review required.
+**Suggested action**: ${follows === 'yes' && starCount > 0 ? '✅ Ready for payout review' : '⚠️ Missing requirements'}
     `;
 
     await octokit.rest.issues.createComment({
