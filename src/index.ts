@@ -6,12 +6,8 @@ async function checkArticle(url: string) {
   try {
     const response = await axios.get(url, { timeout: 10000 });
     const html = response.data;
-    
-    // Simple logic: extract text length between main content tags (heuristic)
-    // Works for Dev.to, Medium, etc.
-    const text = html.replace(/<[^>]*>?/gm, ' '); // Strip HTML tags
+    const text = html.replace(/<[^>]*>?/gm, ' '); 
     const wordCount = text.trim().split(/\s+/).length;
-    
     return {
       isLive: true,
       wordCount,
@@ -32,6 +28,7 @@ async function run() {
 
     const commentBody = context.payload.comment?.body || '';
     const sender = context.payload.comment?.user?.login;
+    const currentCommentId = context.payload.comment?.id;
 
     if (!commentBody.toLowerCase().includes('claim') && !commentBody.toLowerCase().includes('wallet:')) return;
 
@@ -40,10 +37,10 @@ async function run() {
     const walletMatch = commentBody.match(/wallet:\s*(`)?(\w+)(`)?/i);
     const wallet = walletMatch ? walletMatch[2] : null;
 
-    // Extract Article URL
     const urlMatch = commentBody.match(/https?:\/\/(dev\.to|medium\.com)\/[^\s]+/i);
     const articleUrl = urlMatch ? urlMatch[0] : null;
 
+    // 1. Follow Check
     let follows = 'no';
     try {
       await octokit.rest.users.checkPersonIsFollowedByAuthenticated({
@@ -55,6 +52,7 @@ async function run() {
       follows = 'no';
     }
 
+    // 2. Star Counting
     const owner = 'Scottcjn';
     const scottRepos = await octokit.paginate(octokit.rest.repos.listForUser, {
       username: owner,
@@ -76,6 +74,30 @@ async function run() {
       }
     }
 
+    // 3. Duplicate/Previous Claims Detection
+    let duplicateDetected = 'no';
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+      ...context.repo,
+      issue_number: context.issue.number,
+      per_page: 100
+    });
+
+    for (const comment of comments) {
+      if (comment.id === currentCommentId) continue; 
+      const body = comment.body?.toLowerCase() || '';
+      const cSender = comment.user?.login;
+      
+      if (cSender === sender && (body.includes('claim') || body.includes('wallet:'))) {
+        duplicateDetected = 'yes (user)';
+        break;
+      }
+      if (wallet && body.includes(wallet.toLowerCase()) && (body.includes('paid') || body.includes('suggested payout'))) {
+        duplicateDetected = 'yes (wallet)';
+        break;
+      }
+    }
+
+    // 4. Wallet Check
     let walletBalance = 'N/A';
     let walletExists = 'no';
     if (wallet) {
@@ -91,6 +113,7 @@ async function run() {
       }
     }
 
+    // 5. Article Check
     let articleResult = null;
     if (articleUrl) {
       articleResult = await checkArticle(articleUrl);
@@ -104,10 +127,11 @@ async function run() {
 | Follows @Scottcjn | ${follows === 'yes' ? '✅ Yes' : '❌ No'} |
 | Scottcjn repos starred | **${starCount}** / ${scottRepos.length} |
 | Wallet \`${wallet || 'N/A'}\` exists | ${walletExists === 'yes' ? `✅ Yes (Balance: ${walletBalance})` : '❌ Not Found'} |
+| Duplicate claim | ${duplicateDetected === 'no' ? '✅ None' : `⚠️ Warning (${duplicateDetected})`} |
 ${articleResult ? `| Article Live | ${articleResult.isLive ? '✅ Yes' : '❌ No'} |` : ''}
 ${articleResult && articleResult.isLive ? `| Word Count | ${articleResult.wordCount} (${articleResult.quality} quality) |` : ''}
 
-**Suggested action**: ${follows === 'yes' && starCount > 0 ? '✅ Ready for payout review' : '⚠️ Missing requirements'}
+**Suggested action**: ${follows === 'yes' && starCount > 0 && duplicateDetected === 'no' ? '✅ Ready for payout review' : '⚠️ Manual review required'}
     `;
 
     await octokit.rest.issues.createComment({
