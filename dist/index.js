@@ -39,6 +39,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const axios_1 = __importDefault(require("axios"));
+async function checkArticle(url) {
+    try {
+        const response = await axios_1.default.get(url, { timeout: 10000 });
+        const html = response.data;
+        // Simple logic: extract text length between main content tags (heuristic)
+        // Works for Dev.to, Medium, etc.
+        const text = html.replace(/<[^>]*>?/gm, ' '); // Strip HTML tags
+        const wordCount = text.trim().split(/\s+/).length;
+        return {
+            isLive: true,
+            wordCount,
+            quality: wordCount > 500 ? 'High' : wordCount > 200 ? 'Medium' : 'Low'
+        };
+    }
+    catch (e) {
+        return { isLive: false, wordCount: 0, quality: 'None' };
+    }
+}
 async function run() {
     try {
         const token = core.getInput('github-token');
@@ -53,9 +71,11 @@ async function run() {
         core.info(`Processing claim from @${sender}...`);
         const walletMatch = commentBody.match(/wallet:\s*(`)?(\w+)(`)?/i);
         const wallet = walletMatch ? walletMatch[2] : null;
+        // Extract Article URL
+        const urlMatch = commentBody.match(/https?:\/\/(dev\.to|medium\.com)\/[^\s]+/i);
+        const articleUrl = urlMatch ? urlMatch[0] : null;
         let follows = 'no';
         try {
-            // Corrected check: check if target_user follows username (Scottcjn)
             await octokit.rest.users.checkPersonIsFollowedByAuthenticated({
                 username: 'Scottcjn',
                 target_user: sender
@@ -78,7 +98,6 @@ async function run() {
             per_page: 100
         });
         for (const item of starredRepos) {
-            // Octokit type for starred repos can vary depending on headers, but usually contains .repo or is the repo itself
             const repoFullName = item.full_name || item.repo?.full_name;
             if (repoFullName && scottRepoFullNames.has(repoFullName)) {
                 starCount++;
@@ -99,6 +118,10 @@ async function run() {
                 core.warning(`Node API check failed: ${e.message}`);
             }
         }
+        let articleResult = null;
+        if (articleUrl) {
+            articleResult = await checkArticle(articleUrl);
+        }
         const responseBody = `
 ## Automated Verification for @${sender}
 
@@ -107,6 +130,8 @@ async function run() {
 | Follows @Scottcjn | ${follows === 'yes' ? '✅ Yes' : '❌ No'} |
 | Scottcjn repos starred | **${starCount}** / ${scottRepos.length} |
 | Wallet \`${wallet || 'N/A'}\` exists | ${walletExists === 'yes' ? `✅ Yes (Balance: ${walletBalance})` : '❌ Not Found'} |
+${articleResult ? `| Article Live | ${articleResult.isLive ? '✅ Yes' : '❌ No'} |` : ''}
+${articleResult && articleResult.isLive ? `| Word Count | ${articleResult.wordCount} (${articleResult.quality} quality) |` : ''}
 
 **Suggested action**: ${follows === 'yes' && starCount > 0 ? '✅ Ready for payout review' : '⚠️ Missing requirements'}
     `;
